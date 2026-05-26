@@ -238,7 +238,7 @@ def main():
         pin_memory=True,
         drop_last=True,
         persistent_workers=(args.num_workers > 0),
-        prefetch_factor=2 if args.num_workers > 0 else None,
+        prefetch_factor=4 if args.num_workers > 0 else None,  # Prefetch more batches untuk avoid GPU starvation
     )
     val_loader = DataLoader(
         val_dataset,
@@ -247,7 +247,7 @@ def main():
         num_workers=args.num_workers,
         pin_memory=True,
         persistent_workers=(args.num_workers > 0),
-        prefetch_factor=2 if args.num_workers > 0 else None,
+        prefetch_factor=4 if args.num_workers > 0 else None,  # Prefetch more batches untuk avoid GPU starvation
     )
 
     # Model
