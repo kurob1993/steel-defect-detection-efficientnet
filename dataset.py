@@ -93,7 +93,7 @@ def get_transforms(mode: str = "train") -> A.Compose:
                 A.GaussNoise(p=0.3),
                 # CLAHE disabled — expensive CPU operation, causing DataLoader bottleneck
                 # A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8), p=0.3),
-                A.ToGray(p=1.0),
+                A.ToGray(num_output_channels=1, p=1.0),
                 A.Normalize(mean=[0.485], std=[0.229]),
                 ToTensorV2(),
             ]
@@ -102,7 +102,7 @@ def get_transforms(mode: str = "train") -> A.Compose:
         return A.Compose(
             [
                 A.Resize(height=INPUT_HEIGHT, width=INPUT_WIDTH, interpolation=cv2.INTER_LINEAR),
-                A.ToGray(p=1.0),
+                A.ToGray(num_output_channels=1, p=1.0),
                 A.Normalize(mean=[0.485], std=[0.229]),
                 ToTensorV2(),
             ]
@@ -216,7 +216,7 @@ class SeverstalDataset(Dataset):
         masks_hwc = masks.transpose(1, 2, 0)  # (H, W, 4)
 
         transformed = self.transforms(image=image, mask=masks_hwc)
-        image_tensor = transformed["image"]  # (3, H, W) float32 — ToGray = 3ch
+        image_tensor = transformed["image"]  # (1, H, W) float32
         mask_tensor = transformed["mask"].permute(2, 0, 1).float()  # (4, H, W) float32
 
         return image_tensor, mask_tensor, torch.tensor(cls_labels)

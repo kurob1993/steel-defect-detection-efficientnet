@@ -61,6 +61,13 @@ class TwoHeadedModel(nn.Module):
             classes=num_classes,
         )
 
+        # SMP EfficientNet encoder keeps classification tail params registered,
+        # but decoder/features path in this model never uses them.
+        for param_name in ("_conv_head.weight", "_bn1.weight", "_bn1.bias"):
+            parameter = dict(self.seg_model.encoder.named_parameters()).get(param_name)
+            if parameter is not None:
+                parameter.requires_grad = False
+
         # Classification head menggunakan encoder features
         encoder_out_channels = self.seg_model.encoder.out_channels[-1]
         self.cls_head = nn.Sequential(
