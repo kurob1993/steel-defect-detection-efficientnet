@@ -91,7 +91,8 @@ def get_transforms(mode: str = "train") -> A.Compose:
                     brightness_limit=0.2, contrast_limit=0.2, p=0.4
                 ),
                 A.GaussNoise(p=0.3),
-                A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8), p=0.3),
+                # CLAHE disabled — expensive CPU operation, causing DataLoader bottleneck
+                # A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8), p=0.3),
                 A.ToGray(p=1.0),
                 A.Normalize(mean=[0.485], std=[0.229]),
                 ToTensorV2(),
