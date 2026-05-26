@@ -121,12 +121,14 @@ class SeverstalDataset(Dataset):
         image_ids: list[str],
         df: pd.DataFrame,
         mode: str = "train",
+        use_ram_cache: bool | None = None,
     ):
         self.image_ids = image_ids
         self.df = df
         self.mode = mode
         self.transforms = get_transforms(mode)
         self.original_shape = (ORIGINAL_HEIGHT, ORIGINAL_WIDTH)
+        self.use_ram_cache = USE_RAM_CACHE if use_ram_cache is None else use_ram_cache
 
         # Fast index: hindari df[df["ImageId"] == image_id] tiap __getitem__
         self._rle_index: dict[str, list[tuple[int, str]]] = {}
@@ -148,7 +150,7 @@ class SeverstalDataset(Dataset):
 
         # RAM cache: IMAGE ONLY. Jangan cache mask — mask cache >16GB dan bikin swap.
         self._image_cache: dict[str, np.ndarray] = {}
-        if USE_RAM_CACHE and mode == "train":
+        if self.use_ram_cache and mode == "train":
             self._preload_cache()
 
     def _preload_cache(self):
@@ -181,7 +183,7 @@ class SeverstalDataset(Dataset):
             print(f"   ✅ Image cache done! ({elapsed:.0f}s, {success_count}/{len(self.image_ids)} images, {mem_gb:.1f}GB)")
         except Exception as e:
             print(f"   ⚠️  Cache gagal: {e}")
-            print(f"   📌 Melanjutkan tanpa cache")
+            print("   📌 Melanjutkan tanpa cache")
             self._image_cache.clear()
 
     def _build_masks_fast(self, image_id: str) -> np.ndarray:
