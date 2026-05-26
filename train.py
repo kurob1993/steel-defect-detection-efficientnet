@@ -52,6 +52,8 @@ def parse_args():
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--no-fp16", action="store_true", help="Disable FP16")
     parser.add_argument("--no-multi-gpu", action="store_true", help="Force single GPU")
+    parser.add_argument("--early-stop-patience", type=int, default=EARLY_STOP_PATIENCE)
+    parser.add_argument("--min-epochs", type=int, default=10)
     return parser.parse_args()
 
 
@@ -105,6 +107,14 @@ def reduce_scalar(value: float, device: str, ctx: dict) -> float:
     tensor = torch.tensor(value, device=device)
     dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
     return tensor.item()
+
+
+def broadcast_int(value: int, device: str, ctx: dict) -> int:
+    if not ctx["is_distributed"]:
+        return value
+    tensor = torch.tensor([value], dtype=torch.int64, device=device)
+    dist.broadcast(tensor, src=0)
+    return int(tensor.item())
 
 
 def reduce_metric_dict(metric_sums: dict[str, float], count: int, device: str, ctx: dict) -> dict:
@@ -475,7 +485,9 @@ def main():
         # Save best — unwrap DataParallel for clean state_dict
         model_state = model.module.state_dict() if isinstance(model, (DataParallel, DistributedDataParallel)) else model.state_dict()
 
-        if ctx["is_main"] and val_metrics["mean_dice"] > best_val_dice:
+        improved = val_metrics["mean_dice"] > best_val_dice
+
+        if ctx["is_main"] and improved:
             best_val_dice = val_metrics["mean_dice"]
             patience_counter = 0
             torch.save(
@@ -518,11 +530,11 @@ def main():
             history_path = MODEL_SAVE_DIR / "training_history.json"
             history_path.write_text(json.dumps(history, indent=2))
 
-        # Early stopping
-        patience_counter = int(reduce_scalar(float(patience_counter), device, ctx))
-        if patience_counter >= EARLY_STOP_PATIENCE:
+        # Early stopping (sync dari rank-0 ke semua rank, bukan all-reduce)
+        patience_counter = broadcast_int(patience_counter, device, ctx)
+        if (epoch + 1) >= args.min_epochs and patience_counter >= args.early_stop_patience:
             if ctx["is_main"]:
-                print(f"\n⏹️  Early stopping: tidak ada improvement {EARLY_STOP_PATIENCE} epochs")
+                print(f"\n⏹️  Early stopping: tidak ada improvement {args.early_stop_patience} epochs")
             break
 
     if ctx["is_main"]:
