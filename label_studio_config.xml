@@ -1,0 +1,9 @@
+<View>
+  <Image name="image" value="$image"/>
+  <BrushLabels name="label" toName="image">
+    <Label value="Patch" background="#FF6B6B"/>
+    <Label value="Crack / Crazing" background="#4D96FF"/>
+    <Label value="Pitted Surface" background="#6BCB77"/>
+    <Label value="Scratch" background="#FFD93D"/>
+  </BrushLabels>
+</View>
