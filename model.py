@@ -148,9 +148,15 @@ class TwoHeadedModel(nn.Module):
         }
 
 
-def create_model(num_classes: int = NUM_CLASSES) -> TwoHeadedModel:
+def create_model(
+    num_classes: int = NUM_CLASSES,
+    encoder_weights: str | None = ENCODER_WEIGHTS,
+) -> TwoHeadedModel:
     """Factory function untuk membuat model."""
-    return TwoHeadedModel(num_classes=num_classes)
+    return TwoHeadedModel(
+        num_classes=num_classes,
+        encoder_weights=encoder_weights,
+    )
 
 
 def load_trained_model(
@@ -159,7 +165,8 @@ def load_trained_model(
     num_classes: int = NUM_CLASSES,
 ) -> TwoHeadedModel:
     """Load model terlatih untuk inference."""
-    model = create_model(num_classes=num_classes)
+    # Gunakan encoder_weights=None saat loading checkpoint agar tidak mendownload ImageNet weights
+    model = create_model(num_classes=num_classes, encoder_weights=None)
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
 
     if isinstance(checkpoint, dict):
