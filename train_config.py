@@ -117,10 +117,18 @@ PLATEAU_PATIENCE = 3
 # ── Early stopping ─────────────────────────────────────
 EARLY_STOP_PATIENCE = 7
 
-# ── Post-processing ────────────────────────────────────
+# ── Inference / Post-processing ────────────────────────
+# Backward-compatible scalar defaults.
 PIXEL_THRESHOLD = 0.55     # Threshold binary mask
-MIN_DEFECT_PIXELS = 128    # Minimum pixel per class mask (scratch tipis bisa kecil)
+MIN_DEFECT_PIXELS = 128    # Minimum pixel per class mask
 MIN_COMPONENT_SIZE = 150   # Minimum connected component size
+
+# Class-specific defaults. Order: class 1, 2, 3, 4.
+# Class 2 and 4 often contain thin defects, so their min-area filters start lower.
+# Class 3 is frequent and noisier, so a stricter min-area filter is safer.
+# Final values should be selected from validation/OOF with tune_thresholds.py.
+PIXEL_THRESHOLDS = [0.50, 0.40, 0.55, 0.45]
+MIN_DEFECT_PIXELS_PER_CLASS = [300, 50, 600, 80]
 
 # ── TTA ────────────────────────────────────────────────
 USE_TTA = True

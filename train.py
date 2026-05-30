@@ -39,6 +39,7 @@ from train_config import *
 from dataset import SeverstalDataset, prepare_data
 from model import create_model
 from losses import TwoHeadLoss, compute_dice
+from postprocess import postprocess_prediction
 
 
 def parse_args():
@@ -243,7 +244,12 @@ def validate(
         seg_prob = output["seg_logits"].sigmoid()
         cls_prob = output["cls_logits"].sigmoid()
         gated_mask = seg_prob * cls_prob[:, :, None, None]
-        preds = (gated_mask > PIXEL_THRESHOLD).float()
+        gated_np = gated_mask.detach().cpu().numpy()
+        preds_np = np.stack([
+            postprocess_prediction(sample, PIXEL_THRESHOLDS, MIN_DEFECT_PIXELS_PER_CLASS)
+            for sample in gated_np
+        ])
+        preds = torch.from_numpy(preds_np).to(device=device, dtype=torch.float32)
         batch_dice = compute_dice(preds, masks)
         for k, v in batch_dice.items():
             if k not in all_dice:
@@ -504,6 +510,8 @@ def main():
                         "decoder": DECODER_TYPE,
                         "pixel_threshold": PIXEL_THRESHOLD,
                         "min_defect_pixels": MIN_DEFECT_PIXELS,
+                        "pixel_thresholds": PIXEL_THRESHOLDS,
+                        "min_defect_pixels_per_class": MIN_DEFECT_PIXELS_PER_CLASS,
                         "use_soft_gating": True,
                     },
                 },

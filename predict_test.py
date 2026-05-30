@@ -19,29 +19,33 @@ import time
 from pathlib import Path
 
 import cv2
+import numpy as np
 import pandas as pd
 import torch
 
-from app.services.inference_pipeline import (
-    DEFAULT_COLORS,
-    analyze_prediction,
-    preprocess_image as shared_preprocess_image,
-)
 from train_config import (
     BEST_MODEL_PATH,
     CLASS_NAMES,
     INPUT_HEIGHT,
     INPUT_WIDTH,
     MIN_DEFECT_PIXELS,
+    MIN_DEFECT_PIXELS_PER_CLASS,
     PIXEL_THRESHOLD,
+    PIXEL_THRESHOLDS,
     TTA_FLIPS,
     USE_TTA,
 )
 from model import load_trained_model
+from postprocess import postprocess_prediction
 from tta import tta_predict
 
 
-COLORS = DEFAULT_COLORS
+COLORS = {
+    0: (255, 80, 80),
+    1: (80, 255, 80),
+    2: (80, 160, 255),
+    3: (255, 220, 80),
+}
 
 
 def resolve_device(device: str = "auto") -> str:
@@ -60,13 +64,57 @@ def preprocess_image(image_path: str, device: str) -> tuple[object, torch.Tensor
     if image is None:
         raise FileNotFoundError(f"Gambar tidak ditemukan: {image_path}")
 
-    tensor_np = shared_preprocess_image(
-        image,
-        target_width=INPUT_WIDTH,
-        target_height=INPUT_HEIGHT,
-    )
-    tensor = torch.from_numpy(tensor_np).to(device)
+    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    resized = cv2.resize(rgb, (INPUT_WIDTH, INPUT_HEIGHT), interpolation=cv2.INTER_LINEAR)
+    gray = cv2.cvtColor(resized, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
+    gray = (gray - 0.485) / 0.229
+    tensor = torch.from_numpy(gray[None, None, :, :]).to(device)
     return image, tensor
+
+
+def analyze_prediction(
+    image: np.ndarray,
+    mask: np.ndarray,
+    cls_prob: np.ndarray,
+    thresholds: list[float],
+    min_pixels: list[int],
+    class_names: dict[int, str],
+    colors: dict[int, tuple[int, int, int]],
+) -> dict:
+    """Summarize model output and create an overlay for manual QA."""
+    binary_masks = postprocess_prediction(mask, thresholds, min_pixels)
+    h, w = image.shape[:2]
+    overlay = image.copy()
+    defects = []
+
+    for class_idx in range(binary_masks.shape[0]):
+        binary = cv2.resize(binary_masks[class_idx], (w, h), interpolation=cv2.INTER_NEAREST)
+        area_px = int(binary.sum())
+        if area_px <= 0:
+            continue
+
+        color = colors.get(class_idx, (0, 255, 255))
+        color_layer = np.zeros_like(overlay)
+        color_layer[binary > 0] = color
+        overlay = cv2.addWeighted(overlay, 1.0, color_layer, 0.35, 0)
+
+        defects.append({
+            "class_id": class_idx + 1,
+            "class_name": class_names.get(class_idx, f"Class {class_idx + 1}"),
+            "area_px": area_px,
+            "area_ratio": area_px / float(h * w),
+            "cls_prob": float(cls_prob[class_idx]),
+        })
+
+    return {
+        "cls_probabilities": {
+            class_names.get(i, f"Class {i + 1}"): float(cls_prob[i])
+            for i in range(len(cls_prob))
+        },
+        "defects": defects,
+        "has_defect": bool(defects),
+        "overlay": overlay,
+    }
 
 
 def predict_single(
@@ -97,8 +145,8 @@ def predict_single(
         image=image,
         mask=mask,
         cls_prob=cls_prob,
-        threshold=PIXEL_THRESHOLD,
-        min_defect_pixels=MIN_DEFECT_PIXELS,
+        thresholds=PIXEL_THRESHOLDS,
+        min_pixels=MIN_DEFECT_PIXELS_PER_CLASS,
         class_names=CLASS_NAMES,
         colors=COLORS,
     )
@@ -288,6 +336,8 @@ def run_default_suite(
         "tta_flips": TTA_FLIPS if use_tta and USE_TTA else [],
         "threshold": PIXEL_THRESHOLD,
         "min_defect_pixels": MIN_DEFECT_PIXELS,
+        "pixel_thresholds": PIXEL_THRESHOLDS,
+        "min_defect_pixels_per_class": MIN_DEFECT_PIXELS_PER_CLASS,
         "train_summary": {
             "total": len(train_results),
             "defect_samples": len(defect_samples),
@@ -366,6 +416,8 @@ def main():
             "tta_flips": TTA_FLIPS if use_tta and USE_TTA else [],
             "threshold": PIXEL_THRESHOLD,
             "min_defect_pixels": MIN_DEFECT_PIXELS,
+            "pixel_thresholds": PIXEL_THRESHOLDS,
+            "min_defect_pixels_per_class": MIN_DEFECT_PIXELS_PER_CLASS,
             "result": result,
         }
         save_json(single_report_path, single_report)
