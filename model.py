@@ -49,6 +49,12 @@ class TwoHeadedModel(nn.Module):
         self.num_classes = num_classes
         self.in_channels = in_channels
 
+        if not HAS_SMP:
+            raise ImportError(
+                "segmentation-models-pytorch is required to build TwoHeadedModel. "
+                "Install it (and timm) before inference/training."
+            )
+
         # Channel adapter: grayscale → 3 channel untuk pretrained encoder
         self.channel_adapter = nn.Conv2d(in_channels, 3, kernel_size=1)
 
