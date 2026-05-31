@@ -141,8 +141,8 @@ USE_AUGMENTATION = True
 
 # ── Defect class names (index 0-3, sesuai output tensor [B, 4, H, W]) ──
 CLASS_NAMES = {
-    0: "Patch",
-    1: "Crack / Crazing",
-    2: "Pitted Surface",
-    3: "Scratch",
+    0: "Patch",           # Tambalan / bercak pada permukaan baja
+    1: "Crack / Crazing", # Retakan / retak halus seperti jaring
+    2: "Pitted Surface",  # Permukaan berlubang / bopeng akibat korosi
+    3: "Scratch",         # Goresan pada permukaan baja
 }

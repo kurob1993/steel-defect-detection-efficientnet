@@ -11,6 +11,8 @@ Usage:
     python predict_test.py
     python predict_test.py --image path/to/image.jpg
     python predict_test.py --test-batch-size 100
+    python predict_test.py --video path/to/video.mp4
+    python predict_test.py --video path/to/video.mp4 --no-tta --frame-skip 5
 """
 
 import argparse
@@ -132,11 +134,13 @@ def predict_single(
 
     image, tensor = preprocess_image(image_path, device)
 
+    t_start = time.perf_counter()
     with torch.no_grad():
         if use_tta and USE_TTA:
             result = tta_predict(model, tensor, flips=TTA_FLIPS)
         else:
             result = model.predict(tensor)
+    elapsed_ms = (time.perf_counter() - t_start) * 1000
 
     mask = result["mask"].squeeze(0).detach().cpu().numpy()
     cls_prob = result["cls_prob"].squeeze(0).detach().cpu().numpy()
@@ -157,6 +161,7 @@ def predict_single(
         "defects": analyzed["defects"],
         "has_defect": analyzed["has_defect"],
         "overlay_path": None,
+        "elapsed_ms": round(elapsed_ms, 1),
     }
 
     if save_overlay:
@@ -184,6 +189,8 @@ def print_single_result(result: dict, gt_label: str | None = None):
         )
     if result.get("overlay_path"):
         print(f"  Overlay: {result['overlay_path']}")
+    if result.get("elapsed_ms") is not None:
+        print(f"  ⏱ Waktu predict: {result['elapsed_ms']} ms")
     print()
 
 
@@ -376,9 +383,241 @@ def run_default_suite(
     print(f"💾 Progress file: {progress_path}")
 
 
+def _draw_video_overlay(
+    frame: np.ndarray,
+    analyzed: dict,
+    frame_idx: int,
+    fps: float,
+) -> np.ndarray:
+    """Gambar overlay mask + label teks pada frame video."""
+    out = analyzed["overlay"].copy()
+    h, w = out.shape[:2]
+
+    # ── Header: nomor frame & timestamp ──
+    timestamp_sec = frame_idx / fps if fps > 0 else 0
+    header = f"Frame {frame_idx}  |  {timestamp_sec:.2f}s"
+    cv2.putText(out, header, (10, 24), cv2.FONT_HERSHEY_SIMPLEX,
+                0.65, (255, 255, 255), 2, cv2.LINE_AA)
+
+    # ── Status defect ──
+    status = "DEFECT DETECTED" if analyzed["has_defect"] else "Normal"
+    color_status = (0, 60, 255) if analyzed["has_defect"] else (60, 200, 60)
+    cv2.putText(out, status, (10, 52), cv2.FONT_HERSHEY_SIMPLEX,
+                0.75, color_status, 2, cv2.LINE_AA)
+
+    # ── Label per kelas yang terdeteksi ──
+    y_offset = 82
+    for defect in analyzed["defects"]:
+        label = (
+            f"{defect['class_name']}: "
+            f"{defect['cls_prob']:.2f} | "
+            f"{defect['area_px']}px ({defect['area_ratio']:.2%})"
+        )
+        cv2.putText(out, label, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55, (255, 255, 100), 1, cv2.LINE_AA)
+        y_offset += 22
+
+    return out
+
+
+def predict_video(
+    video_path: str,
+    model_path: str,
+    device: str = "auto",
+    use_tta: bool = False,
+    frame_skip: int = 1,
+    output_dir: str = "outputs/predict_video",
+    report_dir: str = "outputs/predict_test_reports",
+    pixel_thresholds: list[float] | None = None,
+    min_defect_pixels: list[int] | None = None,
+) -> None:
+    """Proses video frame per frame dan simpan video output dengan overlay defect.
+
+    Args:
+        video_path:         Path ke file video input (.mp4, .avi, dll).
+        model_path:         Path ke checkpoint model.
+        device:             'auto' | 'cuda' | 'cpu'.
+        use_tta:            Aktifkan TTA (lambat untuk video, default False).
+        frame_skip:         Proses 1 dari setiap N frame (1 = semua frame).
+        output_dir:         Direktori simpan video output.
+        report_dir:         Direktori simpan laporan JSON.
+        pixel_thresholds:   Override threshold mask per class. Default lebih rendah
+                            dari konfigurasi global agar lebih sensitif di video.
+        min_defect_pixels:  Override min pixel per class. Default lebih rendah
+                            dari konfigurasi global agar tidak terlalu ketat.
+    """
+    # ── Threshold video: default lebih sensitif dari gambar statis ──
+    # Video bisa punya domain gap (lighting, resolusi, motion blur)
+    # sehingga probabilitas model lebih rendah dari threshold training.
+    _thresholds = pixel_thresholds if pixel_thresholds is not None else [t - 0.10 for t in PIXEL_THRESHOLDS]
+    _min_pixels = min_defect_pixels if min_defect_pixels is not None else [max(1, m // 4) for m in MIN_DEFECT_PIXELS_PER_CLASS]
+
+    device = resolve_device(device)
+    model = load_model_once(model_path, device=device)
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise FileNotFoundError(f"Video tidak dapat dibuka: {video_path}")
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    out_path = Path(output_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    stem = Path(video_path).stem
+    output_video_path = out_path / f"{stem}_overlay.mp4"
+
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(output_video_path), fourcc, fps, (orig_w, orig_h))
+
+    print(f"\n🎬 Video input    : {video_path}")
+    print(f"   Resolusi      : {orig_w}x{orig_h}  |  FPS: {fps:.1f}  |  Total frame: {total_frames}")
+    print(f"   Frame skip    : {frame_skip} (proses 1 dari setiap {frame_skip} frame)")
+    print(f"   Thresholds    : {_thresholds}  (global: {PIXEL_THRESHOLDS})")
+    print(f"   Min px/class  : {_min_pixels}  (global: {MIN_DEFECT_PIXELS_PER_CLASS})")
+    print(f"   Output        : {output_video_path}\n")
+
+    frame_reports = []
+    class_counts = {name: 0 for name in CLASS_NAMES.values()}
+    frames_with_defect = 0
+    frames_without_defect = 0
+    processed = 0
+    last_analyzed: dict | None = None  # reuse hasil frame sebelumnya jika di-skip
+
+    total_start = time.perf_counter()
+    frame_idx = 0
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        if frame_idx % frame_skip == 0:
+            # ── Preprocess frame (tanpa baca file, langsung dari array) ──
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            resized = cv2.resize(rgb, (INPUT_WIDTH, INPUT_HEIGHT), interpolation=cv2.INTER_LINEAR)
+            gray = cv2.cvtColor(resized, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
+            gray = (gray - 0.485) / 0.229
+            tensor = torch.from_numpy(gray[None, None, :, :]).to(device)
+
+            t_start = time.perf_counter()
+            with torch.no_grad():
+                if use_tta and USE_TTA:
+                    result = tta_predict(model, tensor, flips=TTA_FLIPS)
+                else:
+                    result = model.predict(tensor)
+            elapsed_ms = round((time.perf_counter() - t_start) * 1000, 1)
+
+            mask = result["mask"].squeeze(0).detach().cpu().numpy()
+            cls_prob = result["cls_prob"].squeeze(0).detach().cpu().numpy()
+
+            last_analyzed = analyze_prediction(
+                image=frame,
+                mask=mask,
+                cls_prob=cls_prob,
+                thresholds=_thresholds,
+                min_pixels=_min_pixels,
+                class_names=CLASS_NAMES,
+                colors=COLORS,
+            )
+
+            # ── Statistik ──
+            if last_analyzed["has_defect"]:
+                frames_with_defect += 1
+                for defect in last_analyzed["defects"]:
+                    class_counts[defect["class_name"]] += 1
+            else:
+                frames_without_defect += 1
+
+            frame_reports.append({
+                "frame": frame_idx,
+                "timestamp_sec": round(frame_idx / fps, 3),
+                "elapsed_ms": elapsed_ms,
+                "has_defect": last_analyzed["has_defect"],
+                "cls_probabilities": last_analyzed["cls_probabilities"],
+                "defects": last_analyzed["defects"],
+            })
+            processed += 1
+
+            if processed % 50 == 0:
+                elapsed_total = time.perf_counter() - total_start
+                print(f"  Progress: frame {frame_idx}/{total_frames}  "
+                      f"({processed} diproses, {elapsed_total:.1f}s)")
+
+        # ── Tulis frame ke video output (selalu, skip atau tidak) ──
+        if last_analyzed is not None:
+            out_frame = _draw_video_overlay(frame, last_analyzed, frame_idx, fps)
+        else:
+            out_frame = frame
+        writer.write(out_frame)
+        frame_idx += 1
+
+    cap.release()
+    writer.release()
+    total_elapsed = round(time.perf_counter() - total_start, 1)
+
+    # ── Ringkasan ──
+    print(f"\n📊 Ringkasan Video")
+    print(f"  Total frame          : {frame_idx}")
+    print(f"  Frame diproses       : {processed}")
+    print(f"  Frame dengan defect  : {frames_with_defect}")
+    print(f"  Frame tanpa defect   : {frames_without_defect}")
+    for class_name, count in class_counts.items():
+        print(f"  {class_name}: {count} frame")
+    print(f"  Total waktu          : {total_elapsed}s")
+    print(f"\n💾 Video output : {output_video_path}")
+
+    # ── Simpan laporan JSON ──
+    report_path = Path(report_dir)
+    report_path.mkdir(parents=True, exist_ok=True)
+    json_report_path = report_path / f"video_{stem}.json"
+    save_json(json_report_path, {
+        "video_path": str(video_path),
+        "model_path": str(model_path),
+        "device": device,
+        "use_tta": use_tta,
+        "frame_skip": frame_skip,
+        "fps": fps,
+        "total_frames": frame_idx,
+        "frames_processed": processed,
+        "pixel_thresholds_used": _thresholds,
+        "pixel_thresholds_global": PIXEL_THRESHOLDS,
+        "min_defect_pixels_used": _min_pixels,
+        "min_defect_pixels_global": MIN_DEFECT_PIXELS_PER_CLASS,
+        "summary": {
+            "frames_with_defect": frames_with_defect,
+            "frames_without_defect": frames_without_defect,
+            "class_counts": class_counts,
+            "elapsed_sec": total_elapsed,
+        },
+        "frame_results": frame_reports,
+    })
+    print(f"💾 JSON report  : {json_report_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Test trained Two-Headed model")
     parser.add_argument("--image", type=str, default=None)
+    parser.add_argument("--video", type=str, default=None,
+                        help="Path ke file video (.mp4, .avi, dll)")
+    parser.add_argument("--frame-skip", type=int, default=1,
+                        help="Proses 1 dari setiap N frame (default: 1 = semua frame)")
+    parser.add_argument(
+        "--video-thresh", type=float, nargs=4, default=None,
+        metavar=("C0", "C1", "C2", "C3"),
+        help="Override pixel threshold per class untuk video "
+             "(default: PIXEL_THRESHOLDS - 0.10). "
+             "Contoh: --video-thresh 0.40 0.30 0.45 0.35"
+    )
+    parser.add_argument(
+        "--video-min-px", type=int, nargs=4, default=None,
+        metavar=("C0", "C1", "C2", "C3"),
+        help="Override min pixel per class untuk video "
+             "(default: MIN_DEFECT_PIXELS_PER_CLASS // 4). "
+             "Contoh: --video-min-px 75 12 150 20"
+    )
     parser.add_argument("--model", type=str, default=str(BEST_MODEL_PATH))
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--no-tta", action="store_true")
@@ -389,15 +628,18 @@ def main():
     device = resolve_device(args.device)
     use_tta = not args.no_tta
 
-    if args.image is None:
-        run_default_suite(
+    if args.video is not None:
+        predict_video(
+            video_path=args.video,
             model_path=args.model,
             device=device,
             use_tta=use_tta,
-            report_dir=Path(args.report_dir),
-            test_batch_size=args.test_batch_size,
+            frame_skip=args.frame_skip,
+            report_dir=args.report_dir,
+            pixel_thresholds=args.video_thresh,
+            min_defect_pixels=args.video_min_px,
         )
-    else:
+    elif args.image is not None:
         result = predict_single(
             args.image,
             args.model,
@@ -422,6 +664,14 @@ def main():
         }
         save_json(single_report_path, single_report)
         print(f"💾 Single report: {single_report_path}")
+    else:
+        run_default_suite(
+            model_path=args.model,
+            device=device,
+            use_tta=use_tta,
+            report_dir=Path(args.report_dir),
+            test_batch_size=args.test_batch_size,
+        )
 
 
 if __name__ == "__main__":
